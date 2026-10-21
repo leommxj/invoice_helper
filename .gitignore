@@ -2,6 +2,7 @@
 /build/
 /.cache/
 /cmake-build-*/
+/vcpkg_installed/
 
 # Machine-local dependencies and toolchain
 /tools/

@@ -5,6 +5,9 @@
 #if defined(_WIN32)
 #include <windows.h>
 #include <shellapi.h>
+#else
+#include <wx/string.h>
+#include <wx/utils.h>
 #endif
 
 #include <cstdio>
@@ -12,6 +15,14 @@
 
 namespace invoice {
 namespace {
+
+#if !defined(_WIN32)
+wxString QuoteShellArgument(const wxString& value) {
+    wxString quoted = value;
+    quoted.Replace("'", "'\\''");
+    return "'" + quoted + "'";
+}
+#endif
 
 }
 
@@ -89,8 +100,17 @@ bool PrintPdfWithSystem(const std::filesystem::path& path, std::string& error) {
     }
     return true;
 #else
-    (void)path;
-    error = "当前平台尚未实现 PDF 直接打印";
+    const wxString file = wxString::FromUTF8(path.string());
+    const wxString quoted = QuoteShellArgument(file);
+
+    if (wxExecute("lp -- " + quoted, wxEXEC_SYNC) == 0) {
+        return true;
+    }
+    if (wxExecute("lpr -- " + quoted, wxEXEC_SYNC) == 0) {
+        return true;
+    }
+
+    error = "无法调用系统打印命令（lp/lpr），请确认 CUPS 已安装";
     return false;
 #endif
 }

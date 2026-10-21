@@ -1,0 +1,10 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "invoice-helper",
+  "version-string": "0.1.0",
+  "description": "Chinese invoice PDF helper desktop application",
+  "dependencies": [
+    "wxwidgets",
+    "libmupdf"
+  ]
+}

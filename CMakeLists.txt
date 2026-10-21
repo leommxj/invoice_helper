@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.24)
 
 project(invoice_helper VERSION 0.1.0 LANGUAGES CXX)
 
@@ -6,22 +6,30 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-find_package(OpenGL REQUIRED)
-find_package(wxWidgets CONFIG REQUIRED)
-
-set(MUPDF_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/mupdf" CACHE PATH "MuPDF installation root")
-if (NOT EXISTS "${MUPDF_ROOT}/include/mupdf/fitz.h")
-    message(FATAL_ERROR "MuPDF not found at ${MUPDF_ROOT}. Run the workspace dependency setup first.")
+if (MSVC)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 endif()
 
-add_library(mupdf INTERFACE)
-target_include_directories(mupdf INTERFACE "${MUPDF_ROOT}/include")
-target_link_libraries(mupdf INTERFACE
-    "${MUPDF_ROOT}/lib/libmupdf.a"
-    "${MUPDF_ROOT}/lib/libmupdf-third.a"
-)
-if (NOT MSVC)
-    target_link_libraries(mupdf INTERFACE m)
+function(invoice_helper_set_warnings target)
+    if (MSVC)
+        target_compile_options(${target} PRIVATE /W4 /permissive- /utf-8)
+    else()
+        target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic -finput-charset=UTF-8 -fexec-charset=UTF-8)
+    endif()
+endfunction()
+
+if (NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
+
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+
+find_package(wxWidgets CONFIG REQUIRED)
+find_package(unofficial-libmupdf CONFIG REQUIRED)
+
+set(WX_TARGETS wx::core wx::base)
+if (TARGET wx::adv)
+    list(APPEND WX_TARGETS wx::adv)
 endif()
 
 add_executable(invoice_helper
@@ -38,7 +46,8 @@ add_executable(invoice_helper
 )
 
 target_include_directories(invoice_helper PRIVATE src)
-target_link_libraries(invoice_helper PRIVATE wx::wxmono mupdf)
+target_link_libraries(invoice_helper PRIVATE ${WX_TARGETS} unofficial::libmupdf::libmupdf)
+invoice_helper_set_warnings(invoice_helper)
 
 if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9)
     target_link_libraries(invoice_helper PRIVATE stdc++fs)
@@ -46,12 +55,6 @@ endif()
 
 if (MINGW)
     target_link_options(invoice_helper PRIVATE -static)
-endif()
-
-if (MSVC)
-    target_compile_options(invoice_helper PRIVATE /W4 /permissive- /utf-8)
-else()
-    target_compile_options(invoice_helper PRIVATE -Wall -Wextra -Wpedantic -finput-charset=UTF-8 -fexec-charset=UTF-8)
 endif()
 
 if (WIN32)
@@ -70,7 +73,8 @@ add_executable(invoice_parser_smoke
     src/parser/PdfText.cpp
 )
 target_include_directories(invoice_parser_smoke PRIVATE src)
-target_link_libraries(invoice_parser_smoke PRIVATE mupdf)
+target_link_libraries(invoice_parser_smoke PRIVATE unofficial::libmupdf::libmupdf)
+invoice_helper_set_warnings(invoice_parser_smoke)
 if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9)
     target_link_libraries(invoice_parser_smoke PRIVATE stdc++fs)
 endif()
