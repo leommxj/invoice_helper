@@ -14,12 +14,16 @@ jobs:
     timeout-minutes: 60
     env:
       VCPKG_MAX_CONCURRENCY: 4
-      VCPKG_BUILD_TYPE: release
       VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
 
       - name: Enable vcpkg binary cache
         uses: actions/github-script@v7
@@ -50,7 +54,7 @@ jobs:
       - name: Configure
         shell: pwsh
         run: |
-          $output = & cmake --preset windows-release 2>&1
+          $output = & cmake --preset windows-ninja-release 2>&1
           $exitCode = $LASTEXITCODE
           $output | Tee-Object -FilePath configure.log
           exit $exitCode
@@ -69,7 +73,7 @@ jobs:
             Add-Content -Path $summary -Value '```'
           }
 
-          $issue = 'build/windows/vcpkg_installed/vcpkg/issue_body.md'
+          $issue = 'build/windows-ninja/vcpkg_installed/vcpkg/issue_body.md'
           if (Test-Path $issue) {
             Add-Content -Path $summary -Value '### vcpkg issue body'
             Add-Content -Path $summary -Value '```text'
@@ -95,7 +99,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path $dir | Out-Null
 
           if (Test-Path configure.log) { Copy-Item configure.log "$dir/" }
-          $issue = 'build/windows/vcpkg_installed/vcpkg/issue_body.md'
+          $issue = 'build/windows-ninja/vcpkg_installed/vcpkg/issue_body.md'
           if (Test-Path $issue) { Copy-Item $issue "$dir/" }
 
           Get-PSDrive C | Out-File "$dir/disk.txt"
@@ -116,7 +120,7 @@ jobs:
           git push origin "HEAD:ci-diagnostics/$run"
 
       - name: Build
-        run: cmake --build --preset windows-release --parallel 4
+        run: cmake --build --preset windows-ninja-release --parallel 4
 
       - name: Package
         shell: pwsh
@@ -127,7 +131,7 @@ jobs:
           $dir = "release/$name"
 
           New-Item -ItemType Directory -Force -Path $dir | Out-Null
-          Copy-Item "build/windows/bin/Release/invoice_helper.exe" "$dir/"
+          Copy-Item "build/windows-ninja/bin/invoice_helper.exe" "$dir/"
           Copy-Item "LICENSE", "README.md", "docs/DEPENDENCIES.md" "$dir/"
           Compress-Archive -Path $dir -DestinationPath "release/$name.zip" -CompressionLevel Optimal
 
