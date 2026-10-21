@@ -16,7 +16,8 @@
       "cacheVariables": {
         "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/tools/vcpkg/scripts/buildsystems/vcpkg.cmake",
         "VCPKG_TARGET_TRIPLET": "x64-windows-static",
-        "VCPKG_MANIFEST_MODE": "ON"
+        "VCPKG_MANIFEST_MODE": "ON",
+        "VCPKG_INSTALL_OPTIONS": "--clean-after-build"
       }
     },
     {
