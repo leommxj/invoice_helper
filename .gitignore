@@ -1,0 +1,21 @@
+# Local build output and caches
+/build/
+/.cache/
+/cmake-build-*/
+
+# Machine-local dependencies and toolchain
+/tools/
+/third_party/
+
+# Local invoice fixtures (may contain real tax data)
+/tests/invoices/*
+!/tests/invoices/README.md
+
+# IDE and OS files
+.vscode/
+.idea/
+*.user
+*.suo
+*.swp
+.DS_Store
+Thumbs.db
