@@ -14,6 +14,7 @@ jobs:
     timeout-minutes: 60
     env:
       VCPKG_MAX_CONCURRENCY: 4
+      VCPKG_BUILD_TYPE: release
 
     steps:
       - name: Checkout
@@ -39,7 +40,43 @@ jobs:
           key: vcpkg-downloads-${{ runner.os }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
 
       - name: Configure
-        run: cmake --preset windows-release
+        shell: pwsh
+        run: |
+          $output = & cmake --preset windows-release 2>&1
+          $exitCode = $LASTEXITCODE
+          $output | Tee-Object -FilePath configure.log
+          exit $exitCode
+
+      - name: Configure diagnostics
+        if: failure()
+        shell: pwsh
+        run: |
+          $summary = $env:GITHUB_STEP_SUMMARY
+          Add-Content -Path $summary -Value '## Configure diagnostics'
+
+          if (Test-Path configure.log) {
+            Add-Content -Path $summary -Value '### CMake output'
+            Add-Content -Path $summary -Value '```text'
+            Get-Content configure.log -Tail 200 | Add-Content -Path $summary
+            Add-Content -Path $summary -Value '```'
+          }
+
+          $issue = 'build/windows/vcpkg_installed/vcpkg/issue_body.md'
+          if (Test-Path $issue) {
+            Add-Content -Path $summary -Value '### vcpkg issue body'
+            Add-Content -Path $summary -Value '```text'
+            Get-Content $issue -Tail 120 | Add-Content -Path $summary
+            Add-Content -Path $summary -Value '```'
+          }
+
+          $logs = Get-ChildItem tools/vcpkg/buildtrees -Recurse -Filter '*.log' -File -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 4
+          foreach ($log in $logs) {
+            Add-Content -Path $summary -Value "### $($log.FullName)"
+            Add-Content -Path $summary -Value '```text'
+            Get-Content $log.FullName -Tail 120 | Add-Content -Path $summary
+            Add-Content -Path $summary -Value '```'
+          }
 
       - name: Build
         run: cmake --build --preset windows-release --parallel 4
