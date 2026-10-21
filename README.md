@@ -140,3 +140,9 @@ build/linux/bin/invoice_parser_smoke "tests/invoices/发票.pdf"
 ```
 
 测试发票统一放在 `tests/invoices/`，该目录不进入 Git，避免把真实税号和交易信息带入版本历史。
+
+## 许可证
+
+本项目自身代码采用 WTFPL v2，详见 [LICENSE](LICENSE)。
+
+第三方依赖仍遵循各自许可证，尤其是 MuPDF 的 AGPL-3.0-only；对外分发包含 MuPDF 的二进制前，需要同时满足其许可证要求。
