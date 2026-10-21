@@ -141,6 +141,10 @@ build/linux/bin/invoice_parser_smoke "tests/invoices/发票.pdf"
 
 测试发票统一放在 `tests/invoices/`，该目录不进入 Git，避免把真实税号和交易信息带入版本历史。
 
+## 发布
+
+推送 `v*` 标签会触发 `.github/workflows/release.yml`，在 `windows-latest` 上重新编译 Release，并创建对应的 GitHub Release、上传 zip 和 SHA-256 校验文件。
+
 ## 许可证
 
 本项目自身代码采用 WTFPL v2，详见 [LICENSE](LICENSE)。

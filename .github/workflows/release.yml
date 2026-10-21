@@ -1,0 +1,80 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  windows-release:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      VCPKG_MAX_CONCURRENCY: 4
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up vcpkg
+        shell: pwsh
+        run: |
+          $baseline = (Get-Content vcpkg-configuration.json | ConvertFrom-Json).'default-registry'.baseline
+          if (-not $baseline) { throw 'vcpkg baseline is missing' }
+
+          git init tools/vcpkg
+          git -C tools/vcpkg remote add origin https://github.com/microsoft/vcpkg.git
+          git -C tools/vcpkg fetch --depth 1 origin $baseline
+          git -C tools/vcpkg checkout --detach FETCH_HEAD
+          .\tools\vcpkg\bootstrap-vcpkg.bat -disableMetrics
+          New-Item -ItemType Directory -Force -Path tools/vcpkg/downloads | Out-Null
+
+      - name: Cache vcpkg downloads
+        uses: actions/cache@v4
+        with:
+          path: tools/vcpkg/downloads
+          key: vcpkg-downloads-${{ runner.os }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
+
+      - name: Configure
+        run: cmake --preset windows-release
+
+      - name: Build
+        run: cmake --build --preset windows-release --parallel 4
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          $version = $tag -replace '^v', ''
+          $name = "invoice-helper-$version-windows-x64"
+          $dir = "release/$name"
+
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          Copy-Item "build/windows/bin/Release/invoice_helper.exe" "$dir/"
+          Copy-Item "LICENSE", "README.md", "docs/DEPENDENCIES.md" "$dir/"
+          Compress-Archive -Path $dir -DestinationPath "release/$name.zip" -CompressionLevel Optimal
+
+          $hash = (Get-FileHash "release/$name.zip" -Algorithm SHA256).Hash.ToLower()
+          "$hash  $name.zip" | Set-Content "release/$name.zip.sha256" -Encoding ascii
+
+      - name: Publish release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          $version = $tag -replace '^v', ''
+          $asset = "release/invoice-helper-$version-windows-x64.zip"
+          $checksum = "$asset.sha256"
+
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag $asset $checksum --clobber
+          } else {
+            gh release create $tag $asset $checksum `
+              --title "发票小助手 $tag" `
+              --notes-file .github/release-notes.md
+          }
