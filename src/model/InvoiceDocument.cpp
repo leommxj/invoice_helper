@@ -27,7 +27,8 @@ wxString FormatName(FileFormat format) {
 wxString StatusName(ImportStatus status) {
     switch (status) {
         case ImportStatus::Imported: return Utf8("已导入");
-        case ImportStatus::Parsed: return Utf8("已解析");
+        case ImportStatus::Parsed: return wxString();
+        case ImportStatus::NotInvoice: return Utf8("非发票");
         case ImportStatus::Duplicate: return Utf8("重复");
         case ImportStatus::ParseFailed: return Utf8("解析失败");
         case ImportStatus::Unsupported: return Utf8("不支持");

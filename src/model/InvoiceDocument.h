@@ -23,6 +23,7 @@ enum class FileFormat {
 enum class ImportStatus {
     Imported,
     Parsed,
+    NotInvoice,
     Duplicate,
     ParseFailed,
     Unsupported,

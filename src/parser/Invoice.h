@@ -24,6 +24,8 @@ struct InvoiceItem {
 
 struct Invoice {
     bool parsed = false;
+    bool hasInvoiceNumberLabel = false;
+    bool numberFromLabel = false;
     std::string title;
     std::string tag;
     std::string number;

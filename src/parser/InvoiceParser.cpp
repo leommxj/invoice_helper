@@ -78,6 +78,23 @@ bool Contains(const std::string& value, const std::string& needle) {
     return value.find(needle) != std::string::npos;
 }
 
+bool IsInvoiceTitleLine(const std::string& text) {
+    const std::string compact = Compact(text);
+    if (StartsWith(compact, "电子发票")) {
+        return true;
+    }
+    if (StartsWith(compact, "增值税") && Contains(compact, "发票")) {
+        return true;
+    }
+    if (StartsWith(compact, "机动车销售统一发票")) {
+        return true;
+    }
+    if (StartsWith(compact, "二手车销售统一发票")) {
+        return true;
+    }
+    return false;
+}
+
 double CenterY(const TextLine& line) {
     return (line.y0 + line.y1) * 0.5;
 }
@@ -220,12 +237,8 @@ std::string NormalizeDate(const std::string& text) {
 std::string NormalizeInvoiceNumber(const std::string& text) {
     const std::string compact = Compact(text);
     std::smatch match;
-    const std::regex longNumber(R"((\d{15,20}))");
-    if (std::regex_search(compact, match, longNumber)) {
-        return match[1].str();
-    }
-    const std::regex shortNumber(R"((\d{10,20}))");
-    if (std::regex_search(compact, match, shortNumber)) {
+    const std::regex number(R"((\d{8,20}))");
+    if (std::regex_search(compact, match, number)) {
         return match[1].str();
     }
     return {};
@@ -362,9 +375,7 @@ bool ParsePdfInvoice(const std::filesystem::path& path, Invoice& invoice, std::s
 
     for (const auto& ref : lines) {
         const std::string text = Trim(ref.line->text);
-        if (invoice.title.empty() && Contains(text, "电子发票")) {
-            invoice.title = text;
-        } else if (invoice.title.empty() && Contains(text, "增值税") && Contains(text, "发票")) {
+        if (invoice.title.empty() && IsInvoiceTitleLine(text)) {
             invoice.title = text;
         }
         if (invoice.tag.empty() &&
@@ -373,16 +384,13 @@ bool ParsePdfInvoice(const std::filesystem::path& path, Invoice& invoice, std::s
         }
     }
 
-    std::string numberValue;
-    if (FindLabelValue(lines, "发票号码", numberValue)) {
-        invoice.number = NormalizeInvoiceNumber(numberValue);
-    }
-    if (invoice.number.empty()) {
-        for (const auto& ref : lines) {
-            invoice.number = NormalizeInvoiceNumber(ref.line->text);
-            if (!invoice.number.empty()) {
-                break;
-            }
+    const LineRef* numberLabel = FindByPrefix(lines, "发票号码");
+    if (numberLabel != nullptr) {
+        invoice.hasInvoiceNumberLabel = true;
+        std::string numberValue;
+        if (FindValueRight(lines, *numberLabel, numberValue)) {
+            invoice.number = NormalizeInvoiceNumber(numberValue);
+            invoice.numberFromLabel = !invoice.number.empty();
         }
     }
 
@@ -689,12 +697,9 @@ bool ParsePdfInvoice(const std::filesystem::path& path, Invoice& invoice, std::s
         }
     }
 
-    if (invoice.number.empty() && invoice.totalWithTax.empty() && invoice.title.empty()) {
-        error = "未识别到发票字段";
-        return false;
+    if (invoice.numberFromLabel && invoice.hasTotalWithTax) {
+        invoice.parsed = true;
     }
-
-    invoice.parsed = true;
     return true;
 }
 

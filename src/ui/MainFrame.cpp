@@ -556,13 +556,21 @@ bool MainFrame::AddFile(const wxString& path, std::size_t folderIndex) {
     if (imported.format == invoice::FileFormat::Pdf) {
         std::string error;
         if (invoice::ParsePdfInvoice(ToPath(fullPath), imported.invoice, error)) {
-            imported.status = invoice::ImportStatus::Parsed;
-            if (!imported.invoice.number.empty()) {
+            if (imported.invoice.title.empty() &&
+                !imported.invoice.hasInvoiceNumberLabel) {
+                imported.status = invoice::ImportStatus::NotInvoice;
+            } else if (!imported.invoice.numberFromLabel ||
+                       !imported.invoice.hasTotalWithTax) {
+                imported.status = invoice::ImportStatus::ParseFailed;
+                imported.parseError = "缺少有效发票号码或价税合计";
+            } else {
+                imported.status = invoice::ImportStatus::Parsed;
                 for (const auto& existing : files_) {
                     if (existing.status == invoice::ImportStatus::Duplicate) {
                         continue;
                     }
-                    if (existing.invoice.parsed &&
+                    if (existing.status == invoice::ImportStatus::Parsed &&
+                        existing.invoice.numberFromLabel &&
                         existing.invoice.number == imported.invoice.number) {
                         imported.status = invoice::ImportStatus::Duplicate;
                         imported.duplicateOfName = existing.name;
@@ -787,8 +795,11 @@ void MainFrame::ShowInvoiceDetails(const invoice::ImportedFile& file) {
     overview << Utf8("文件名：") << file.name << "\n"
              << Utf8("路径：") << file.path << "\n"
              << Utf8("格式：") << invoice::FormatName(file.format) << "\n"
-             << Utf8("大小：") << FormatBytes(file.size) << "\n"
-             << Utf8("状态：") << invoice::StatusName(file.status) << "\n";
+             << Utf8("大小：") << FormatBytes(file.size) << "\n";
+    const wxString status = invoice::StatusName(file.status);
+    if (!status.empty()) {
+        overview << Utf8("状态：") << status << "\n";
+    }
     if (file.status == invoice::ImportStatus::Duplicate) {
         overview << Utf8("重复于：") << file.duplicateOfName << "\n";
     }
@@ -880,10 +891,10 @@ void MainFrame::ShowFolderDetails(const FolderEntry& folder) {
         }
         if (file.invoice.parsed) {
             ++parsedCount;
-        }
-        if (file.invoice.hasTotalWithTax) {
-            ++withTotalCount;
-            totalCents += file.invoice.totalWithTaxCents;
+            if (file.invoice.hasTotalWithTax) {
+                ++withTotalCount;
+                totalCents += file.invoice.totalWithTaxCents;
+            }
         }
 
         items << file.name;
@@ -905,7 +916,7 @@ void MainFrame::ShowFolderDetails(const FolderEntry& folder) {
     if (duplicateCount > 0) {
         overview << Utf8("    重复：") << duplicateCount << Utf8(" 张");
     }
-    overview << "\n" << Utf8("已解析：") << parsedCount << "\n";
+    overview << "\n" << Utf8("发票：") << parsedCount << "\n";
     if (withTotalCount > 0) {
         overview << Utf8("价税合计：") << Utf8(invoice::FormatMoney(totalCents)) << "\n";
     }
@@ -932,13 +943,13 @@ InvoiceStats MainFrame::ComputeStats(const std::vector<std::size_t>& indices,
         }
 
         std::int64_t cents = 0;
-        if (invoice::ParseMoneyCents(file.invoice.totalAmount, cents)) {
+        if (file.invoice.parsed && invoice::ParseMoneyCents(file.invoice.totalAmount, cents)) {
             stats.amountCents += cents;
         }
-        if (invoice::ParseMoneyCents(file.invoice.totalTax, cents)) {
+        if (file.invoice.parsed && invoice::ParseMoneyCents(file.invoice.totalTax, cents)) {
             stats.taxCents += cents;
         }
-        if (file.invoice.hasTotalWithTax) {
+        if (file.invoice.parsed && file.invoice.hasTotalWithTax) {
             ++stats.withTotalCount;
             stats.totalCents += file.invoice.totalWithTaxCents;
         }
