@@ -1,17 +1,35 @@
 #include "parser/InvoiceParser.h"
 
+#include <algorithm>
+#include <cctype>
 #include <filesystem>
 #include <iostream>
 
 int main(int argc, char** argv) {
     if (argc < 2) {
-        std::cerr << "usage: invoice_parser_smoke <invoice.pdf>\n";
+        std::cerr << "usage: invoice_parser_smoke <invoice.pdf|invoice.ofd|invoice.xml>\n";
         return 2;
     }
 
+    const std::filesystem::path path(argv[1]);
+    std::string extension = path.extension().string();
+    std::transform(extension.begin(), extension.end(), extension.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
     invoice::Invoice parsed;
     std::string error;
-    if (!invoice::ParsePdfInvoice(std::filesystem::path(argv[1]), parsed, error)) {
+    bool ok = false;
+    if (extension == ".pdf") {
+        ok = invoice::ParsePdfInvoice(path, parsed, error);
+    } else if (extension == ".ofd") {
+        ok = invoice::ParseOfdInvoice(path, parsed, error);
+    } else if (extension == ".xml") {
+        ok = invoice::ParseXmlInvoice(path, parsed, error);
+    } else {
+        error = "unsupported extension";
+    }
+
+    if (!ok) {
         std::cerr << "parse failed: " << error << "\n";
         return 1;
     }

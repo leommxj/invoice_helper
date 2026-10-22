@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(invoice_helper VERSION 0.1.1 LANGUAGES CXX)
+project(invoice_helper VERSION 0.2.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -41,6 +41,7 @@ add_executable(invoice_helper
     src/parser/FileDetector.cpp
     src/parser/Invoice.cpp
     src/parser/InvoiceParser.cpp
+    src/parser/OfdText.cpp
     src/parser/PdfText.cpp
     src/print/PdfPrint.cpp
 )
@@ -70,6 +71,7 @@ add_executable(invoice_parser_smoke
     tests/parser_smoke.cpp
     src/parser/Invoice.cpp
     src/parser/InvoiceParser.cpp
+    src/parser/OfdText.cpp
     src/parser/PdfText.cpp
 )
 target_include_directories(invoice_parser_smoke PRIVATE src)

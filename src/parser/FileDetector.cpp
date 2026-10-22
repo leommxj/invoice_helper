@@ -20,6 +20,12 @@ bool HasExtension(const wxFileName& file, const wxString& extension) {
 
 bool LooksLikeXml(const std::string& data) {
     std::size_t index = 0;
+    if (data.size() >= 3 &&
+        static_cast<unsigned char>(data[0]) == 0xEF &&
+        static_cast<unsigned char>(data[1]) == 0xBB &&
+        static_cast<unsigned char>(data[2]) == 0xBF) {
+        index = 3;
+    }
     while (index < data.size() && std::isspace(static_cast<unsigned char>(data[index]))) {
         ++index;
     }

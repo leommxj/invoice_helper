@@ -1,12 +1,18 @@
 #include "parser/InvoiceParser.h"
 
+#include "parser/OfdText.h"
 #include "parser/PdfText.h"
 
+#include <mupdf/fitz.h>
+
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <functional>
+#include <initializer_list>
+#include <map>
 #include <regex>
 #include <string>
 #include <vector>
@@ -104,6 +110,10 @@ bool IsLabelLike(const std::string& text) {
     return !compact.empty() && compact.back() == ':';
 }
 
+bool IsShortValue(const std::string& text) {
+    return Compact(text).size() <= 3;
+}
+
 std::string ValueAfterColon(const std::string& text) {
     std::size_t position = text.rfind("：");
     std::size_t length = 3;
@@ -141,7 +151,7 @@ bool FindValueRight(const std::vector<LineRef>& lines,
                     const LineRef& label,
                     std::string& value) {
     const std::string inlineValue = ValueAfterColon(label.line->text);
-    if (!inlineValue.empty()) {
+    if (!inlineValue.empty() && !IsShortValue(inlineValue)) {
         value = inlineValue;
         return true;
     }
@@ -160,11 +170,11 @@ bool FindValueRight(const std::vector<LineRef>& lines,
         if (ref.line->x0 <= label.line->x0 + 1.0) {
             continue;
         }
-        const double distance = ref.line->x0 - label.line->x1;
-        if (distance < -9.0 || distance >= bestDistance) {
+        const double distance = std::abs(ref.line->x0 - label.line->x1);
+        if (distance >= bestDistance) {
             continue;
         }
-        if (IsLabelLike(ref.line->text)) {
+        if (IsLabelLike(ref.line->text) || IsShortValue(ref.line->text)) {
             continue;
         }
         best = ref.line;
@@ -188,7 +198,7 @@ bool FindValueRight(const std::vector<LineRef>& lines,
         if (ref.line->x0 < label.line->x0 - 4.0) {
             continue;
         }
-        if (IsLabelLike(ref.line->text)) {
+        if (IsLabelLike(ref.line->text) || IsShortValue(ref.line->text)) {
             continue;
         }
         const double distance = ref.line->y0 - label.line->y1;
@@ -334,7 +344,65 @@ std::string FormatAmount(const std::string& text) {
     return Trim(text);
 }
 
+std::string NormalizeXmlKey(const std::string& key) {
+    std::string result;
+    const std::size_t colon = key.rfind(':');
+    const std::size_t start = colon == std::string::npos ? 0 : colon + 1;
+    for (std::size_t i = start; i < key.size(); ++i) {
+        const unsigned char c = static_cast<unsigned char>(key[i]);
+        if (c == '_' || c == '-' || c == '.' || c == '{' || c == '}') {
+            continue;
+        }
+        result.push_back(c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : static_cast<char>(c));
+    }
+    return result;
 }
+
+void AppendXmlText(fz_xml* node, std::string& text) {
+    if (node == nullptr) {
+        return;
+    }
+    if (fz_xml_tag(node) == nullptr) {
+        const char* value = fz_xml_text(node);
+        if (value != nullptr) {
+            text += value;
+        }
+        return;
+    }
+    for (fz_xml* child = fz_xml_down(node); child != nullptr; child = fz_xml_next(child)) {
+        AppendXmlText(child, text);
+    }
+}
+
+void CollectXmlFields(fz_xml* node, std::map<std::string, std::string>& fields) {
+    for (; node != nullptr; node = fz_xml_next(node)) {
+        const char* tag = fz_xml_tag(node);
+        if (tag != nullptr) {
+            std::string text;
+            AppendXmlText(node, text);
+            const std::string key = NormalizeXmlKey(tag);
+            if (!key.empty() && !Trim(text).empty()) {
+                fields.emplace(key, Trim(text));
+            }
+            CollectXmlFields(fz_xml_down(node), fields);
+        }
+    }
+}
+
+std::string FindXmlField(const std::map<std::string, std::string>& fields,
+                         std::initializer_list<const char*> names) {
+    for (const char* name : names) {
+        const auto it = fields.find(NormalizeXmlKey(name));
+        if (it != fields.end()) {
+            return it->second;
+        }
+    }
+    return {};
+}
+
+}
+
+void ParseInvoiceLines(std::vector<LineRef>& lines, Invoice& invoice);
 
 bool ParsePdfInvoice(const std::filesystem::path& path, Invoice& invoice, std::string& error) {
     invoice = Invoice{};
@@ -356,6 +424,11 @@ bool ParsePdfInvoice(const std::filesystem::path& path, Invoice& invoice, std::s
         return false;
     }
 
+    ParseInvoiceLines(lines, invoice);
+    return true;
+}
+
+void ParseInvoiceLines(std::vector<LineRef>& lines, Invoice& invoice) {
     std::sort(lines.begin(), lines.end(), [](const LineRef& left, const LineRef& right) {
         if (left.page != right.page) {
             return left.page < right.page;
@@ -374,8 +447,12 @@ bool ParsePdfInvoice(const std::filesystem::path& path, Invoice& invoice, std::s
     }
 
     for (const auto& ref : lines) {
-        const std::string text = Trim(ref.line->text);
+        std::string text = Trim(ref.line->text);
         if (invoice.title.empty() && IsInvoiceTitleLine(text)) {
+            const std::size_t numberPosition = text.find("发票号码");
+            if (numberPosition != std::string::npos) {
+                text = Trim(text.substr(0, numberPosition));
+            }
             invoice.title = text;
         }
         if (invoice.tag.empty() &&
@@ -384,7 +461,7 @@ bool ParsePdfInvoice(const std::filesystem::path& path, Invoice& invoice, std::s
         }
     }
 
-    const LineRef* numberLabel = FindByPrefix(lines, "发票号码");
+    const LineRef* numberLabel = FindByContains(lines, "发票号码");
     if (numberLabel != nullptr) {
         invoice.hasInvoiceNumberLabel = true;
         std::string numberValue;
@@ -415,6 +492,22 @@ bool ParsePdfInvoice(const std::filesystem::path& path, Invoice& invoice, std::s
     }
     if (names.size() > 1) {
         invoice.seller.name = names[1].value;
+    }
+    if (invoice.buyer.name.empty()) {
+        const auto buyerNames = CollectLabelValues(lines, [](const std::string& text) {
+            return StartsWith(text, "购买方名称:") || StartsWith(text, "购方名称:");
+        });
+        if (!buyerNames.empty()) {
+            invoice.buyer.name = buyerNames.front().value;
+        }
+    }
+    if (invoice.seller.name.empty()) {
+        const auto sellerNames = CollectLabelValues(lines, [](const std::string& text) {
+            return StartsWith(text, "销售方名称:") || StartsWith(text, "销方名称:");
+        });
+        if (!sellerNames.empty()) {
+            invoice.seller.name = sellerNames.front().value;
+        }
     }
 
     const auto taxIds = CollectLabelValues(lines, [](const std::string& text) {
@@ -575,7 +668,8 @@ bool ParsePdfInvoice(const std::filesystem::path& path, Invoice& invoice, std::s
     if (totalLabel == nullptr) {
         for (const auto& ref : lines) {
             const std::string text = Compact(ref.line->text);
-            if (text == "合计" || (StartsWith(text, "合计") && !Contains(text, "价税合计"))) {
+            if (text == "合计" || text == "合" || text == "计" ||
+                (StartsWith(text, "合计") && !Contains(text, "价税合计"))) {
                 totalLabel = &ref;
                 break;
             }
@@ -590,7 +684,7 @@ bool ParsePdfInvoice(const std::filesystem::path& path, Invoice& invoice, std::s
         std::vector<Amount> amounts;
         const double labelY = CenterY(*totalLabel->line);
         for (const auto& ref : lines) {
-            if (ref.page != totalLabel->page || std::abs(CenterY(*ref.line) - labelY) > 6.0) {
+            if (ref.page != totalLabel->page || std::abs(CenterY(*ref.line) - labelY) > 3.0) {
                 continue;
             }
             if (ref.line->x0 <= totalLabel->line->x1 - 2.0) {
@@ -695,6 +789,189 @@ bool ParsePdfInvoice(const std::filesystem::path& path, Invoice& invoice, std::s
             }
             invoice.remarks += remark;
         }
+    }
+
+    if (invoice.numberFromLabel && invoice.hasTotalWithTax) {
+        invoice.parsed = true;
+    }
+}
+
+bool ParseOfdInvoice(const std::filesystem::path& path, Invoice& invoice, std::string& error) {
+    invoice = Invoice{};
+    error.clear();
+
+    std::vector<TextPage> pages;
+    if (!ExtractOfdText(path, pages, error)) {
+        return false;
+    }
+
+    std::vector<LineRef> lines;
+    for (std::size_t pageIndex = 0; pageIndex < pages.size(); ++pageIndex) {
+        for (const auto& line : pages[pageIndex].lines) {
+            lines.push_back(LineRef{&line, static_cast<int>(pageIndex)});
+        }
+    }
+    if (lines.empty()) {
+        error = "OFD 中没有可提取的文本";
+        return false;
+    }
+
+    ParseInvoiceLines(lines, invoice);
+    return true;
+}
+
+bool ParseXmlInvoice(const std::filesystem::path& path, Invoice& invoice, std::string& error) {
+    invoice = Invoice{};
+    error.clear();
+
+    fz_context* ctx = fz_new_context(nullptr, nullptr, FZ_STORE_UNLIMITED);
+    if (ctx == nullptr) {
+        error = "无法创建 XML 解析上下文";
+        return false;
+    }
+
+    fz_stream* stream = nullptr;
+    fz_buffer* buffer = nullptr;
+    fz_xml* xml = nullptr;
+    std::map<std::string, std::string> fields;
+    char message[512] = {};
+
+    fz_try(ctx) {
+#if defined(_WIN32)
+        stream = fz_open_file_w(ctx, path.wstring().c_str());
+#else
+        stream = fz_open_file(ctx, path.string().c_str());
+#endif
+        buffer = fz_read_all(ctx, stream, 0);
+        fz_drop_stream(ctx, stream);
+        stream = nullptr;
+
+        xml = fz_parse_xml(ctx, buffer, 0);
+        fz_drop_buffer(ctx, buffer);
+        buffer = nullptr;
+
+        if (xml != nullptr) {
+            fz_xml* root = fz_xml_root(xml);
+            if (root != nullptr) {
+                CollectXmlFields(root, fields);
+            }
+        }
+    }
+    fz_catch(ctx) {
+        std::snprintf(message, sizeof(message), "%s", fz_caught_message(ctx));
+        error = message;
+    }
+
+    if (xml != nullptr) {
+        fz_drop_xml(ctx, xml);
+    }
+    if (buffer != nullptr) {
+        fz_drop_buffer(ctx, buffer);
+    }
+    if (stream != nullptr) {
+        fz_drop_stream(ctx, stream);
+    }
+    fz_drop_context(ctx);
+
+    if (!error.empty()) {
+        return false;
+    }
+    if (fields.empty()) {
+        return true;
+    }
+
+    const std::string title = FindXmlField(fields, {
+        "einvoicetype", "invoicetitle", "invoicetype", "title", "发票类型", "票种"});
+    if (!title.empty()) {
+        const std::size_t electronic = title.find("电子发票");
+        invoice.title = electronic != std::string::npos && electronic > 0
+            ? title.substr(electronic)
+            : title;
+    }
+
+    const std::string number = FindXmlField(fields, {
+        "eiid", "invoicenumber", "invoiceno", "invoicenum", "invoiceid", "fphm", "发票号码"});
+    if (!number.empty()) {
+        invoice.hasInvoiceNumberLabel = true;
+        invoice.number = NormalizeInvoiceNumber(number);
+        invoice.numberFromLabel = !invoice.number.empty();
+    }
+
+    const std::string date = FindXmlField(fields, {
+        "issuetime", "issuedate", "invoicedate", "kprq", "开票日期", "rq"});
+    if (!date.empty()) {
+        invoice.issueDate = NormalizeDate(date);
+    }
+
+    const std::string totalWithTax = FindXmlField(fields, {
+        "totaltaxincludedamount", "totalwithtax", "totalamountwithtax",
+        "amountwithtax", "grandtotal", "jshj", "价税合计"});
+    const std::string totalAmount = FindXmlField(fields, {
+        "totalamwithouttax", "totalamount", "hjje", "合计金额"});
+    const std::string totalTax = FindXmlField(fields, {
+        "totaltaxam", "totaltax", "taxamount", "se", "税额"});
+
+    std::int64_t amountCents = 0;
+    std::int64_t taxCents = 0;
+    const bool hasAmount = ParseMoneyCents(totalAmount, amountCents);
+    const bool hasTax = ParseMoneyCents(totalTax, taxCents);
+    if (!totalAmount.empty()) {
+        invoice.totalAmount = FormatAmount(totalAmount);
+    }
+    if (!totalTax.empty()) {
+        invoice.totalTax = FormatAmount(totalTax);
+    }
+
+    std::int64_t totalCents = 0;
+    if (!totalWithTax.empty() && ParseMoneyCents(totalWithTax, totalCents)) {
+        invoice.totalWithTax = FormatMoney(totalCents);
+        invoice.totalWithTaxCents = totalCents;
+        invoice.hasTotalWithTax = true;
+    } else if (hasAmount && hasTax) {
+        totalCents = amountCents + taxCents;
+        invoice.totalWithTax = FormatMoney(totalCents);
+        invoice.totalWithTaxCents = totalCents;
+        invoice.hasTotalWithTax = true;
+    }
+
+    const std::string buyerName = FindXmlField(fields, {
+        "buyername", "purchasername", "gmfmc", "购买方名称", "购方名称"});
+    if (!buyerName.empty()) {
+        invoice.buyer.name = buyerName;
+    }
+    const std::string sellerName = FindXmlField(fields, {
+        "sellername", "salername", "xsfmc", "销售方名称", "销方名称"});
+    if (!sellerName.empty()) {
+        invoice.seller.name = sellerName;
+    }
+    const std::string buyerTaxId = FindXmlField(fields, {
+        "buyeridnum", "buyertaxid", "purchasertaxid", "gmfnsrsbh",
+        "购买方税号", "购买方纳税人识别号"});
+    if (!buyerTaxId.empty()) {
+        invoice.buyer.taxId = buyerTaxId;
+    }
+    const std::string sellerTaxId = FindXmlField(fields, {
+        "selleridnum", "sellertaxid", "salestaxid", "xsfnsrsbh",
+        "销售方税号", "销售方纳税人识别号"});
+    if (!sellerTaxId.empty()) {
+        invoice.seller.taxId = sellerTaxId;
+    }
+
+    const std::string issuer = FindXmlField(fields, {
+        "drawer", "issuer", "kpr", "开票人"});
+    if (!issuer.empty()) {
+        invoice.issuer = issuer;
+    }
+    const std::string amountInWords = FindXmlField(fields, {
+        "totaltaxincludedamountinchinese", "amountinwords", "totalamountinwords",
+        "大写金额", "价税合计大写"});
+    if (!amountInWords.empty()) {
+        invoice.amountInWords = amountInWords;
+    }
+    const std::string remarks = FindXmlField(fields, {
+        "remarks", "remark", "bz", "备注"});
+    if (!remarks.empty()) {
+        invoice.remarks = remarks;
     }
 
     if (invoice.numberFromLabel && invoice.hasTotalWithTax) {

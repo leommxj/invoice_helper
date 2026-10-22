@@ -18,8 +18,10 @@ class wxDataViewEvent;
 struct InvoiceStats {
     wxString scope;
     int totalCount = 0;
+    int uniqueInvoiceCount = 0;
     int duplicateCount = 0;
-    int unparsedCount = 0;
+    int notInvoiceCount = 0;
+    int parseFailedCount = 0;
     int withTotalCount = 0;
     std::int64_t amountCents = 0;
     std::int64_t taxCents = 0;
@@ -50,6 +52,8 @@ private:
     void MergeSelectedAndOpen(wxCommandEvent& event);
     void OnToggleTopMost(wxCommandEvent& event);
     void OnSelectionChanged(wxDataViewEvent& event);
+    void OnFileContextMenu(wxDataViewEvent& event);
+    void RemoveSelected(wxCommandEvent& event);
 
     void AddFolder(const wxString& path);
     bool AddFile(const wxString& path, std::size_t folderIndex);
@@ -58,6 +62,7 @@ private:
     std::size_t FindFile(const wxString& path) const;
 
     void RefreshTree();
+    void RecomputeDuplicates();
     std::vector<std::size_t> SelectedFileIndices() const;
     std::vector<std::filesystem::path> SelectedPdfPaths() const;
     void UpdateSelectionStats();

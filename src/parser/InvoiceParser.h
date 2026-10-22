@@ -8,5 +8,7 @@
 namespace invoice {
 
 bool ParsePdfInvoice(const std::filesystem::path& path, Invoice& invoice, std::string& error);
+bool ParseOfdInvoice(const std::filesystem::path& path, Invoice& invoice, std::string& error);
+bool ParseXmlInvoice(const std::filesystem::path& path, Invoice& invoice, std::string& error);
 
 }

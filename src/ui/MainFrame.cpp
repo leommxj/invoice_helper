@@ -37,6 +37,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <filesystem>
+#include <map>
 #include <set>
 #include <string>
 #include <utility>
@@ -51,6 +52,7 @@ enum {
     ID_MergeSave,
     ID_MergeOpen,
     ID_Clear,
+    ID_Remove,
     ID_StayOnTop,
 };
 
@@ -146,11 +148,17 @@ wxString FormatBytes(std::uintmax_t bytes) {
 }
 
 bool IsSupportedExtension(const wxString& path) {
-    static const wxString extensions[] = {
-        "pdf", "ofd", "xml", "png", "jpg", "jpeg", "tif", "tiff", "webp"};
+    static const wxString extensions[] = {"pdf", "ofd", "xml"};
     const wxString extension = wxFileName(path).GetExt().Lower();
     return std::any_of(std::begin(extensions), std::end(extensions),
                        [&extension](const wxString& item) { return extension == item; });
+}
+
+bool IsImageFormat(invoice::FileFormat format) {
+    return format == invoice::FileFormat::Png ||
+           format == invoice::FileFormat::Jpeg ||
+           format == invoice::FileFormat::Tiff ||
+           format == invoice::FileFormat::Webp;
 }
 
 void AppendField(wxString& output, const wxString& label, const std::string& value) {
@@ -226,6 +234,7 @@ wxBEGIN_EVENT_TABLE(MainFrame, wxFrame)
     EVT_MENU(ID_MergeSave, MainFrame::MergeSelectedAndSave)
     EVT_MENU(ID_MergeOpen, MainFrame::MergeSelectedAndOpen)
     EVT_MENU(ID_Clear, MainFrame::ClearFiles)
+    EVT_MENU(ID_Remove, MainFrame::RemoveSelected)
     EVT_MENU(ID_StayOnTop, MainFrame::OnToggleTopMost)
     EVT_BUTTON(ID_Open, MainFrame::OpenFiles)
     EVT_BUTTON(ID_OpenFolder, MainFrame::OpenFolder)
@@ -234,6 +243,7 @@ wxBEGIN_EVENT_TABLE(MainFrame, wxFrame)
     EVT_BUTTON(ID_MergeOpen, MainFrame::MergeSelectedAndOpen)
     EVT_TOGGLEBUTTON(ID_StayOnTop, MainFrame::OnToggleTopMost)
     EVT_DATAVIEW_SELECTION_CHANGED(wxID_ANY, MainFrame::OnSelectionChanged)
+    EVT_DATAVIEW_ITEM_CONTEXT_MENU(wxID_ANY, MainFrame::OnFileContextMenu)
 wxEND_EVENT_TABLE()
 
 MainFrame::MainFrame()
@@ -253,6 +263,7 @@ void MainFrame::BuildMenu() {
     fileMenu->Append(ID_Print, Utf8("打印选中...	Ctrl+P"));
     fileMenu->Append(ID_MergeSave, Utf8("合成 PDF 并保存..."));
     fileMenu->Append(ID_MergeOpen, Utf8("合成 PDF 并打开"));
+    fileMenu->Append(ID_Remove, Utf8("从列表移除	Delete"));
     fileMenu->Append(ID_Clear, Utf8("清空列表"));
     fileMenu->AppendSeparator();
     fileMenu->Append(wxID_EXIT, Utf8("退出\tAlt+F4"));
@@ -352,8 +363,8 @@ void MainFrame::BuildLayout() {
 
 void MainFrame::OpenFiles(wxCommandEvent&) {
     wxFileDialog dialog(this, Utf8("选择发票文件"), wxEmptyString, wxEmptyString,
-                        Utf8("发票文件 (*.pdf;*.ofd;*.xml;*.png;*.jpg;*.jpeg;*.tif;*.tiff;*.webp)|"
-                             "*.pdf;*.ofd;*.xml;*.png;*.jpg;*.jpeg;*.tif;*.tiff;*.webp|"
+                        Utf8("发票文件 (*.pdf;*.ofd;*.xml)|"
+                             "*.pdf;*.ofd;*.xml|"
                              "所有文件 (*.*)|*.*"),
                         wxFD_OPEN | wxFD_FILE_MUST_EXIST | wxFD_MULTIPLE);
     if (dialog.ShowModal() == wxID_OK) {
@@ -491,14 +502,23 @@ void MainFrame::ClearFiles(wxCommandEvent&) {
 }
 
 void MainFrame::AddFiles(const wxArrayString& paths) {
+    int skipped = 0;
     for (const auto& path : paths) {
         if (wxDirExists(path)) {
             AddFolder(path);
         } else if (wxFileExists(path)) {
+            const auto format = invoice::DetectFormat(path);
+            if (format == invoice::FileFormat::Unknown || IsImageFormat(format)) {
+                ++skipped;
+                continue;
+            }
             AddFile(path, kNoIndex);
         }
     }
     RefreshTree();
+    if (skipped > 0) {
+        SetStatusText(wxString::Format(Utf8("已跳过 %d 个不支持的文件"), skipped));
+    }
 }
 
 void MainFrame::AddFolder(const wxString& path) {
@@ -553,9 +573,20 @@ bool MainFrame::AddFile(const wxString& path, std::size_t folderIndex) {
     imported.size = static_cast<std::uintmax_t>(file.GetSize().GetValue());
     imported.format = invoice::DetectFormat(fullPath);
 
-    if (imported.format == invoice::FileFormat::Pdf) {
+    if (imported.format == invoice::FileFormat::Pdf ||
+        imported.format == invoice::FileFormat::Ofd ||
+        imported.format == invoice::FileFormat::Xml) {
         std::string error;
-        if (invoice::ParsePdfInvoice(ToPath(fullPath), imported.invoice, error)) {
+        bool parsed = false;
+        if (imported.format == invoice::FileFormat::Pdf) {
+            parsed = invoice::ParsePdfInvoice(ToPath(fullPath), imported.invoice, error);
+        } else if (imported.format == invoice::FileFormat::Ofd) {
+            parsed = invoice::ParseOfdInvoice(ToPath(fullPath), imported.invoice, error);
+        } else {
+            parsed = invoice::ParseXmlInvoice(ToPath(fullPath), imported.invoice, error);
+        }
+
+        if (parsed) {
             if (imported.invoice.title.empty() &&
                 !imported.invoice.hasInvoiceNumberLabel) {
                 imported.status = invoice::ImportStatus::NotInvoice;
@@ -582,10 +613,8 @@ bool MainFrame::AddFile(const wxString& path, std::size_t folderIndex) {
             imported.status = invoice::ImportStatus::ParseFailed;
             imported.parseError = error;
         }
-    } else if (imported.format == invoice::FileFormat::Unknown) {
-        imported.status = invoice::ImportStatus::Unsupported;
     } else {
-        imported.status = invoice::ImportStatus::Imported;
+        imported.status = invoice::ImportStatus::Unsupported;
     }
 
     if (folderIndex == kNoIndex) {
@@ -634,28 +663,14 @@ void MainFrame::RefreshTree() {
     for (std::size_t folderIndex = 0; folderIndex < folders_.size(); ++folderIndex) {
         const auto& folder = folders_[folderIndex];
 
-        int duplicateCount = 0;
-        int withTotalCount = 0;
-        std::int64_t folderTotal = 0;
-
-        for (std::size_t fileIndex : folder.fileIndices) {
-            const auto& file = files_[fileIndex];
-            if (file.status == invoice::ImportStatus::Duplicate) {
-                ++duplicateCount;
-            }
-            if (file.invoice.hasTotalWithTax) {
-                ++withTotalCount;
-                folderTotal += file.invoice.totalWithTaxCents;
-            }
-        }
-
-        const wxString folderNumber = wxString::Format(Utf8("%llu 张"),
-            static_cast<unsigned long long>(folder.fileIndices.size()));
-        const wxString folderStatus = duplicateCount > 0
-            ? wxString::Format(Utf8("%d 重复"), duplicateCount)
+        const InvoiceStats stats = ComputeStats(folder.fileIndices, folder.name);
+        const wxString folderNumber = wxString::Format(Utf8("%llu 文件 / %d 发票"),
+            static_cast<unsigned long long>(stats.totalCount), stats.uniqueInvoiceCount);
+        const wxString folderStatus = stats.duplicateCount > 0
+            ? wxString::Format(Utf8("%d 重复"), stats.duplicateCount)
             : wxString();
-        const wxString folderAmount = withTotalCount > 0
-            ? Utf8(invoice::FormatMoney(folderTotal))
+        const wxString folderAmount = stats.withTotalCount > 0
+            ? Utf8(invoice::FormatMoney(stats.totalCents))
             : wxString();
 
         auto* folderData = new RowData(RowData::Kind::Folder, folderIndex, false,
@@ -735,15 +750,16 @@ void MainFrame::UpdateSelectionStats() {
     }
 
     const wxString scope = hasSelection
-        ? wxString::Format(Utf8("选中 %llu 张"),
+        ? wxString::Format(Utf8("选中 %llu 个文件"),
                            static_cast<unsigned long long>(indices.size()))
-        : wxString::Format(Utf8("全部 %llu 张"),
+        : wxString::Format(Utf8("全部 %llu 个文件"),
                            static_cast<unsigned long long>(indices.size()));
     const InvoiceStats stats = ComputeStats(indices, scope);
 
     wxString summary;
     summary << (hasSelection ? Utf8("已选 ") : Utf8("共 "))
-            << stats.totalCount << Utf8(" 张");
+            << stats.totalCount << Utf8(" 个文件，发票 ")
+            << stats.uniqueInvoiceCount << Utf8(" 张");
     if (stats.duplicateCount > 0) {
         summary << Utf8("，其中重复 ") << stats.duplicateCount << Utf8(" 张");
     }
@@ -754,18 +770,128 @@ void MainFrame::UpdateSelectionStats() {
 
     wxString content;
     content << Utf8("范围：") << stats.scope << "\n"
-            << Utf8("张数：") << stats.totalCount << Utf8(" 张")
-            << Utf8("    重复：") << stats.duplicateCount << Utf8(" 张")
-            << Utf8("    未解析：") << stats.unparsedCount << Utf8(" 张") << "\n"
-            << Utf8("金额：") << Utf8(invoice::FormatMoney(stats.amountCents))
-            << Utf8("    税额：") << Utf8(invoice::FormatMoney(stats.taxCents)) << "\n"
-            << Utf8("价税合计：") << Utf8(invoice::FormatMoney(stats.totalCents));
+            << Utf8("文件：") << stats.totalCount
+            << Utf8("    唯一发票：") << stats.uniqueInvoiceCount
+            << Utf8("    重复：") << stats.duplicateCount << "\n"
+            << Utf8("非发票：") << stats.notInvoiceCount
+            << Utf8("    解析失败：") << stats.parseFailedCount << "\n"
+            << Utf8("金额（去重）：") << Utf8(invoice::FormatMoney(stats.amountCents))
+            << Utf8("    税额（去重）：") << Utf8(invoice::FormatMoney(stats.taxCents)) << "\n"
+            << Utf8("价税合计（去重）：") << Utf8(invoice::FormatMoney(stats.totalCents));
     stats_->SetValue(content);
 }
 
 void MainFrame::OnSelectionChanged(wxDataViewEvent&) {
     UpdateSelectionStats();
     ShowSelectionDetails();
+}
+
+void MainFrame::OnFileContextMenu(wxDataViewEvent& event) {
+    const wxDataViewItem item = event.GetItem();
+    if (!item.IsOk()) {
+        return;
+    }
+
+    wxDataViewItemArray selections;
+    fileTree_->GetSelections(selections);
+    bool selected = false;
+    for (const auto& selection : selections) {
+        if (selection == item) {
+            selected = true;
+            break;
+        }
+    }
+    if (!selected) {
+        fileTree_->UnselectAll();
+        fileTree_->Select(item);
+    }
+
+    wxMenu menu;
+    menu.Append(ID_Remove, Utf8("从列表移除"));
+    menu.AppendSeparator();
+    menu.Append(ID_Clear, Utf8("清空列表"));
+    PopupMenu(&menu);
+}
+
+void MainFrame::RemoveSelected(wxCommandEvent&) {
+    wxDataViewItemArray selections;
+    fileTree_->GetSelections(selections);
+    if (selections.empty()) {
+        return;
+    }
+
+    auto* model = static_cast<InvoiceTreeModel*>(fileTree_->GetModel());
+    std::vector<bool> removeFile(files_.size(), false);
+    std::vector<bool> removeFolder(folders_.size(), false);
+    int removedFiles = 0;
+    int removedFolders = 0;
+
+    for (const auto& item : selections) {
+        auto* data = static_cast<RowData*>(model->GetItemData(item));
+        if (data == nullptr) {
+            continue;
+        }
+        if (data->kind == RowData::Kind::File) {
+            if (data->index < removeFile.size() && !removeFile[data->index]) {
+                removeFile[data->index] = true;
+                ++removedFiles;
+            }
+        } else if (data->index < removeFolder.size()) {
+            removeFolder[data->index] = true;
+            ++removedFolders;
+            for (std::size_t fileIndex : folders_[data->index].fileIndices) {
+                if (fileIndex < removeFile.size() && !removeFile[fileIndex]) {
+                    removeFile[fileIndex] = true;
+                    ++removedFiles;
+                }
+            }
+        }
+    }
+
+    if (removedFiles == 0 && removedFolders == 0) {
+        return;
+    }
+
+    std::vector<std::size_t> mapping(files_.size(), kNoIndex);
+    std::vector<invoice::ImportedFile> keptFiles;
+    keptFiles.reserve(files_.size());
+    for (std::size_t i = 0; i < files_.size(); ++i) {
+        if (removeFile[i]) {
+            continue;
+        }
+        mapping[i] = keptFiles.size();
+        keptFiles.push_back(std::move(files_[i]));
+    }
+
+    std::vector<FolderEntry> keptFolders;
+    for (std::size_t i = 0; i < folders_.size(); ++i) {
+        if (removeFolder[i]) {
+            continue;
+        }
+        FolderEntry folder = std::move(folders_[i]);
+        std::vector<std::size_t> indices;
+        for (std::size_t oldIndex : folder.fileIndices) {
+            if (oldIndex < mapping.size() && mapping[oldIndex] != kNoIndex) {
+                indices.push_back(mapping[oldIndex]);
+            }
+        }
+        folder.fileIndices = std::move(indices);
+        if (!folder.fileIndices.empty()) {
+            keptFolders.push_back(std::move(folder));
+        }
+    }
+
+    files_ = std::move(keptFiles);
+    folders_ = std::move(keptFolders);
+
+    RecomputeDuplicates();
+    RefreshTree();
+    ShowEmptyDetails();
+    if (removedFiles > 0) {
+        SetStatusText(wxString::Format(Utf8("已从列表移除 %d 个文件"), removedFiles));
+    } else {
+        SetStatusText(Utf8("已从列表移除空文件夹"));
+    }
 }
 
 void MainFrame::ShowSelectionDetails() {
@@ -871,11 +997,7 @@ void MainFrame::ShowInvoiceDetails(const invoice::ImportedFile& file) {
 }
 
 void MainFrame::ShowFolderDetails(const FolderEntry& folder) {
-    int totalCount = 0;
-    int duplicateCount = 0;
-    int parsedCount = 0;
-    int withTotalCount = 0;
-    std::int64_t totalCents = 0;
+    const InvoiceStats stats = ComputeStats(folder.fileIndices, folder.name);
     wxString overview;
     overview << Utf8("文件夹：") << folder.name << "\n";
     if (!folder.path.empty()) {
@@ -885,21 +1007,14 @@ void MainFrame::ShowFolderDetails(const FolderEntry& folder) {
     wxString items;
     for (std::size_t fileIndex : folder.fileIndices) {
         const auto& file = files_[fileIndex];
-        ++totalCount;
-        if (file.status == invoice::ImportStatus::Duplicate) {
-            ++duplicateCount;
-        }
-        if (file.invoice.parsed) {
-            ++parsedCount;
-            if (file.invoice.hasTotalWithTax) {
-                ++withTotalCount;
-                totalCents += file.invoice.totalWithTaxCents;
-            }
-        }
 
         items << file.name;
         if (file.status == invoice::ImportStatus::Duplicate) {
             items << Utf8("  [重复]");
+        } else if (file.status == invoice::ImportStatus::NotInvoice) {
+            items << Utf8("  [非发票]");
+        } else if (file.status == invoice::ImportStatus::ParseFailed) {
+            items << Utf8("  [解析失败]");
         }
         if (file.invoice.parsed) {
             if (!file.invoice.number.empty()) {
@@ -912,13 +1027,21 @@ void MainFrame::ShowFolderDetails(const FolderEntry& folder) {
         items << "\n";
     }
 
-    overview << Utf8("张数：") << totalCount << Utf8(" 张");
-    if (duplicateCount > 0) {
-        overview << Utf8("    重复：") << duplicateCount << Utf8(" 张");
+    overview << Utf8("文件：") << stats.totalCount
+             << Utf8("    唯一发票：") << stats.uniqueInvoiceCount;
+    if (stats.duplicateCount > 0) {
+        overview << Utf8("    重复：") << stats.duplicateCount;
     }
-    overview << "\n" << Utf8("发票：") << parsedCount << "\n";
-    if (withTotalCount > 0) {
-        overview << Utf8("价税合计：") << Utf8(invoice::FormatMoney(totalCents)) << "\n";
+    overview << "\n";
+    if (stats.notInvoiceCount > 0) {
+        overview << Utf8("非发票：") << stats.notInvoiceCount << "\n";
+    }
+    if (stats.parseFailedCount > 0) {
+        overview << Utf8("解析失败：") << stats.parseFailedCount << "\n";
+    }
+    if (stats.withTotalCount > 0) {
+        overview << Utf8("价税合计（去重）：")
+                 << Utf8(invoice::FormatMoney(stats.totalCents)) << "\n";
     }
     if (items.empty()) {
         items = Utf8("文件夹为空。");
@@ -931,30 +1054,63 @@ InvoiceStats MainFrame::ComputeStats(const std::vector<std::size_t>& indices,
                                      const wxString& scope) const {
     InvoiceStats stats;
     stats.scope = scope;
+    std::set<std::string> seenInvoiceNumbers;
 
     for (std::size_t index : indices) {
         const auto& file = files_[index];
         ++stats.totalCount;
         if (file.status == invoice::ImportStatus::Duplicate) {
             ++stats.duplicateCount;
-        }
-        if (!file.invoice.parsed) {
-            ++stats.unparsedCount;
+        } else if (file.status == invoice::ImportStatus::NotInvoice) {
+            ++stats.notInvoiceCount;
+        } else if (file.status == invoice::ImportStatus::ParseFailed) {
+            ++stats.parseFailedCount;
         }
 
+        if (!file.invoice.parsed || file.invoice.number.empty()) {
+            continue;
+        }
+        if (!seenInvoiceNumbers.insert(file.invoice.number).second) {
+            continue;
+        }
+
+        ++stats.uniqueInvoiceCount;
         std::int64_t cents = 0;
-        if (file.invoice.parsed && invoice::ParseMoneyCents(file.invoice.totalAmount, cents)) {
+        if (invoice::ParseMoneyCents(file.invoice.totalAmount, cents)) {
             stats.amountCents += cents;
         }
-        if (file.invoice.parsed && invoice::ParseMoneyCents(file.invoice.totalTax, cents)) {
+        if (invoice::ParseMoneyCents(file.invoice.totalTax, cents)) {
             stats.taxCents += cents;
         }
-        if (file.invoice.parsed && file.invoice.hasTotalWithTax) {
+        if (file.invoice.hasTotalWithTax) {
             ++stats.withTotalCount;
             stats.totalCents += file.invoice.totalWithTaxCents;
         }
     }
     return stats;
+}
+
+void MainFrame::RecomputeDuplicates() {
+    std::map<std::string, wxString> firstByName;
+    for (auto& file : files_) {
+        if (file.status == invoice::ImportStatus::Duplicate) {
+            file.status = invoice::ImportStatus::Parsed;
+            file.duplicateOfName.clear();
+        }
+        if (!file.invoice.parsed || file.invoice.number.empty()) {
+            continue;
+        }
+
+        const auto it = firstByName.find(file.invoice.number);
+        if (it != firstByName.end()) {
+            file.status = invoice::ImportStatus::Duplicate;
+            file.duplicateOfName = it->second;
+        } else {
+            file.status = invoice::ImportStatus::Parsed;
+            file.duplicateOfName.clear();
+            firstByName.emplace(file.invoice.number, file.name);
+        }
+    }
 }
 
 void MainFrame::OnToggleTopMost(wxCommandEvent& event) {
